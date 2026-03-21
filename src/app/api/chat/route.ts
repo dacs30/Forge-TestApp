@@ -6,13 +6,14 @@ import { executeTool } from "@/lib/tool-executor";
 
 const SYSTEM_PROMPT = `You are a helpful coding assistant with access to isolated Docker containers via HaaS (Harness-as-a-Service).
 
-You can create ephemeral environments, execute code, read/write files, and destroy environments when done.
+You can create ephemeral environments, execute code, read/write files, and destroy environments.
 
 Workflow:
-1. When a user asks you to run code, first create_environment with the right Docker image.
-2. Write code files using write_file, then execute them using exec_command.
-3. You can run multiple commands, inspect output, fix errors, and iterate.
-4. Always destroy_environment when you're completely done.
+1. If you are given an active environment ID, REUSE it — do NOT create a new one unless the user asks for a different language/image or the environment has been destroyed.
+2. If no environment exists yet, create one with create_environment.
+3. Write code files using write_file, then execute them using exec_command.
+4. You can run multiple commands, inspect output, fix errors, and iterate.
+5. Do NOT destroy the environment unless the user explicitly asks to clean up or start fresh. The environment persists across messages so the user can continue working.
 
 Available images:
 - python:3.11-slim — Python
@@ -28,20 +29,58 @@ Tips:
 - For shell: use ["sh", "-c", "your command here"]
 - You can install packages: ["sh", "-c", "pip install requests"] or ["sh", "-c", "npm install lodash"]
 - If a command fails, read the error, fix the code, and retry.
-- Keep responses concise. Show the code you wrote and the output you got.`;
+- Keep responses concise. Show the code you wrote and the output you got.
+- Files and installed packages persist in the environment between messages.
+
+File Generation:
+- You can generate Word (.docx), Excel (.xlsx), PowerPoint (.pptx), PDF, CSV, images, and any other file type.
+- For Office files in Python: pip install openpyxl python-docx python-pptx
+- After generating a file, ALWAYS call offer_download so the user can download it.
+- Example flow: exec pip install → write script → exec script → offer_download the output file.`;
 
 const MAX_TOOL_ROUNDS = 15;
+
+// Friendly labels for tool calls
+function toolLabel(name: string, args: Record<string, unknown>): string {
+  switch (name) {
+    case "create_environment":
+      return `Creating container (${args.image})`;
+    case "exec_command": {
+      const cmd = args.command as string[];
+      const display = cmd.length <= 3 ? cmd.join(" ") : cmd.slice(0, 3).join(" ") + "...";
+      return `Running: ${display}`;
+    }
+    case "write_file":
+      return `Writing ${args.path}`;
+    case "read_file":
+      return `Reading ${args.path}`;
+    case "list_files":
+      return `Listing ${args.path || "/"}`;
+    case "offer_download":
+      return `Preparing download: ${args.filename || (args.path as string).split("/").pop()}`;
+    case "destroy_environment":
+      return `Destroying environment`;
+    default:
+      return name;
+  }
+}
 
 export async function POST(req: NextRequest) {
   const openai = new OpenAI();
 
-  const { messages: clientMessages } = (await req.json()) as {
-    messages: { role: "user" | "assistant"; content: string }[];
-  };
+  const { messages: clientMessages, envId: currentEnvId } =
+    (await req.json()) as {
+      messages: { role: "user" | "assistant"; content: string }[];
+      envId?: string;
+    };
 
-  // Build the message history for OpenAI
+  let systemPrompt = SYSTEM_PROMPT;
+  if (currentEnvId) {
+    systemPrompt += `\n\nACTIVE ENVIRONMENT: ${currentEnvId} — reuse this for commands and file operations. Do not create a new environment unless the user needs a different image.`;
+  }
+
   const messages: ChatCompletionMessageParam[] = [
-    { role: "system", content: SYSTEM_PROMPT },
+    { role: "system", content: systemPrompt },
     ...clientMessages.map(
       (m) =>
         ({
@@ -51,101 +90,176 @@ export async function POST(req: NextRequest) {
     ),
   ];
 
-  // Track environments created so we can clean up on error
-  const activeEnvs = new Set<string>();
+  let activeEnvId = currentEnvId || null;
 
-  try {
-    // Agentic loop: call OpenAI, execute tools, repeat until text response
-    for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-      const completion = await openai.chat.completions.create({
-        model: process.env.OPENAI_MODEL || "gpt-4o",
-        messages,
-        tools: haasTools,
-        tool_choice: "auto",
-      });
-
-      const choice = completion.choices[0];
-      const assistantMessage = choice.message;
-
-      // Add assistant message to history
-      messages.push(assistantMessage as ChatCompletionMessageParam);
-
-      // If no tool calls, we have a final text response
-      if (
-        !assistantMessage.tool_calls ||
-        assistantMessage.tool_calls.length === 0
-      ) {
-        return Response.json({
-          message: {
-            role: "assistant",
-            content: assistantMessage.content || "Done.",
-          },
-        });
+  // Stream NDJSON events to the client
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream({
+    async start(controller) {
+      function send(event: Record<string, unknown>) {
+        controller.enqueue(encoder.encode(JSON.stringify(event) + "\n"));
       }
 
-      // Execute each tool call
-      for (const toolCall of assistantMessage.tool_calls) {
-        if (toolCall.type !== "function") continue;
+      try {
+        for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+          const completion = await openai.chat.completions.create({
+            model: process.env.OPENAI_MODEL || "gpt-4o",
+            messages,
+            tools: haasTools,
+            tool_choice: "auto",
+          });
 
-        const args = JSON.parse(toolCall.function.arguments);
-        const result = await executeTool(toolCall.function.name, args);
+          const choice = completion.choices[0];
+          const assistantMessage = choice.message;
+          messages.push(assistantMessage as ChatCompletionMessageParam);
 
-        // Track created environments for cleanup
-        if (toolCall.function.name === "create_environment") {
-          try {
-            const parsed = JSON.parse(result);
-            if (parsed.id) activeEnvs.add(parsed.id);
-          } catch {
-            // ignore parse errors
+          // No tool calls — send final message
+          if (
+            !assistantMessage.tool_calls ||
+            assistantMessage.tool_calls.length === 0
+          ) {
+            send({
+              type: "message",
+              content: assistantMessage.content || "Done.",
+              envId: activeEnvId,
+            });
+            controller.close();
+            return;
+          }
+
+          // Execute each tool call and stream events
+          for (const toolCall of assistantMessage.tool_calls) {
+            if (toolCall.type !== "function") continue;
+
+            const args = JSON.parse(toolCall.function.arguments);
+            const label = toolLabel(toolCall.function.name, args);
+
+            // Send tool_start event
+            send({
+              type: "tool_start",
+              tool: toolCall.function.name,
+              label,
+              args,
+            });
+
+            const result = await executeTool(toolCall.function.name, args);
+
+            // Track active environment
+            if (toolCall.function.name === "create_environment") {
+              try {
+                const parsed = JSON.parse(result);
+                if (parsed.id) activeEnvId = parsed.id;
+              } catch {
+                // ignore
+              }
+            }
+            if (toolCall.function.name === "destroy_environment") {
+              if (args.env_id === activeEnvId) {
+                activeEnvId = null;
+              }
+            }
+
+            // Parse result for display
+            let resultSummary: string;
+            try {
+              const parsed = JSON.parse(result);
+              if (parsed.error) {
+                resultSummary = `Error: ${parsed.error}`;
+              } else if (toolCall.function.name === "exec_command") {
+                const output = (parsed.stdout || "") + (parsed.stderr || "");
+                resultSummary = output.length > 200
+                  ? output.slice(0, 200) + "..."
+                  : output || "(no output)";
+                if (parsed.exitCode && parsed.exitCode !== "0") {
+                  resultSummary += ` (exit ${parsed.exitCode})`;
+                }
+              } else if (toolCall.function.name === "create_environment") {
+                resultSummary = `Created ${parsed.id}`;
+              } else if (toolCall.function.name === "read_file") {
+                const content = parsed.content || "";
+                resultSummary = content.length > 200
+                  ? content.slice(0, 200) + "..."
+                  : content;
+              } else if (parsed.success) {
+                resultSummary = "Success";
+              } else {
+                resultSummary = result.length > 200 ? result.slice(0, 200) + "..." : result;
+              }
+            } catch {
+              resultSummary = result.length > 200 ? result.slice(0, 200) + "..." : result;
+            }
+
+            // Send tool_result event
+            send({
+              type: "tool_result",
+              tool: toolCall.function.name,
+              label,
+              result: resultSummary,
+            });
+
+            // If this was offer_download, send a file_download event for the UI
+            if (toolCall.function.name === "offer_download") {
+              try {
+                const parsed = JSON.parse(result);
+                if (parsed.success && parsed.download_url) {
+                  send({
+                    type: "file_download",
+                    url: parsed.download_url,
+                    filename: parsed.filename,
+                    description: parsed.description,
+                  });
+                }
+              } catch {
+                // ignore
+              }
+            }
+
+            messages.push({
+              role: "tool",
+              tool_call_id: toolCall.id,
+              content: result,
+            });
           }
         }
-        if (toolCall.function.name === "destroy_environment") {
-          activeEnvs.delete(args.env_id);
+
+        send({
+          type: "message",
+          content:
+            "I reached the maximum number of tool calls. Let me know if you'd like me to continue.",
+          envId: activeEnvId,
+        });
+        controller.close();
+      } catch (error: unknown) {
+        const errorMessage =
+          error instanceof Error ? error.message : "Unknown error";
+
+        let hint = "";
+        if (errorMessage.includes("ECONNREFUSED")) {
+          hint =
+            "\n\nMake sure the HaaS server is running on `localhost:8080`.";
+        }
+        if (
+          errorMessage.includes("API key") ||
+          errorMessage.includes("Incorrect API key")
+        ) {
+          hint = "\n\nSet your `OPENAI_API_KEY` in `.env.local`.";
         }
 
-        messages.push({
-          role: "tool",
-          tool_call_id: toolCall.id,
-          content: result,
+        send({
+          type: "message",
+          content: `**Error:** ${errorMessage}${hint}`,
+          envId: activeEnvId,
         });
+        controller.close();
       }
-    }
+    },
+  });
 
-    // If we hit the loop limit, return what we have
-    return Response.json({
-      message: {
-        role: "assistant",
-        content:
-          "I reached the maximum number of tool calls. Here's what I accomplished so far — let me know if you'd like me to continue.",
-      },
-    });
-  } catch (error: unknown) {
-    const errorMessage =
-      error instanceof Error ? error.message : "Unknown error";
-
-    // Check for common issues
-    let hint = "";
-    if (errorMessage.includes("ECONNREFUSED")) {
-      hint = "\n\nMake sure the HaaS server is running on `localhost:8080`.";
-    }
-    if (
-      errorMessage.includes("API key") ||
-      errorMessage.includes("Incorrect API key")
-    ) {
-      hint = "\n\nSet your `OPENAI_API_KEY` in `.env.local`.";
-    }
-
-    return Response.json({
-      message: {
-        role: "assistant",
-        content: `**Error:** ${errorMessage}${hint}`,
-      },
-    });
-  } finally {
-    // Cleanup any environments that weren't destroyed by the agent
-    const { destroyEnvironment } = await import("@/lib/haas");
-    for (const envId of activeEnvs) {
-      destroyEnvironment(envId).catch(() => {});
-    }
-  }
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "application/x-ndjson",
+      "Cache-Control": "no-cache",
+      "Transfer-Encoding": "chunked",
+    },
+  });
 }

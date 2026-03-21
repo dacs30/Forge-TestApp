@@ -139,6 +139,39 @@ export const haasTools: ChatCompletionTool[] = [
   {
     type: "function",
     function: {
+      name: "offer_download",
+      description:
+        "Offer a file from the container for the user to download. Use this after generating files like Word documents (.docx), Excel spreadsheets (.xlsx), PowerPoint presentations (.pptx), PDFs, images, CSVs, or any other file the user would want to download. This creates a download link in the chat.",
+      parameters: {
+        type: "object",
+        properties: {
+          env_id: {
+            type: "string",
+            description: "The environment ID",
+          },
+          path: {
+            type: "string",
+            description:
+              "Absolute file path inside the container, e.g. /workspace/report.xlsx",
+          },
+          filename: {
+            type: "string",
+            description:
+              "Display filename for the download (e.g. report.xlsx). Defaults to the basename of path.",
+          },
+          description: {
+            type: "string",
+            description:
+              "Brief description of the file for the user, e.g. 'Sales report for Q1 2024'",
+          },
+        },
+        required: ["env_id", "path"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "destroy_environment",
       description:
         "Destroy an environment and its container. Always clean up when done.",

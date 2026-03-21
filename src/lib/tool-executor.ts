@@ -70,6 +70,26 @@ export async function executeTool(
         break;
       }
 
+      case "offer_download": {
+        // Verify the file exists by reading its first bytes
+        const envIdForDownload = args.env_id as string;
+        const filePath = args.path as string;
+        const fileName =
+          (args.filename as string) || filePath.split("/").pop() || "download";
+        const description = (args.description as string) || "";
+
+        // Build the proxy download URL
+        const downloadUrl = `/api/files/download?env_id=${encodeURIComponent(envIdForDownload)}&path=${encodeURIComponent(filePath)}`;
+
+        result = JSON.stringify({
+          success: true,
+          download_url: downloadUrl,
+          filename: fileName,
+          description,
+        });
+        break;
+      }
+
       case "destroy_environment": {
         await destroyEnvironment(args.env_id as string);
         result = JSON.stringify({
