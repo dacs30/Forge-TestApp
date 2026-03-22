@@ -65,6 +65,10 @@ function toolLabel(name: string, args: Record<string, unknown>): string {
   }
 }
 
+const MAX_MESSAGES = 50;
+const MAX_MESSAGE_LENGTH = 50_000;
+const ENV_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
+
 export async function POST(req: NextRequest) {
   const openai = new OpenAI();
 
@@ -73,6 +77,31 @@ export async function POST(req: NextRequest) {
       messages: { role: "user" | "assistant"; content: string }[];
       envId?: string;
     };
+
+  // Input validation
+  if (!Array.isArray(clientMessages) || clientMessages.length === 0) {
+    return Response.json({ error: "messages is required" }, { status: 400 });
+  }
+  if (clientMessages.length > MAX_MESSAGES) {
+    return Response.json(
+      { error: `Too many messages (max ${MAX_MESSAGES})` },
+      { status: 400 }
+    );
+  }
+  for (const m of clientMessages) {
+    if (!m.role || !m.content || typeof m.content !== "string") {
+      return Response.json({ error: "Invalid message format" }, { status: 400 });
+    }
+    if (m.content.length > MAX_MESSAGE_LENGTH) {
+      return Response.json(
+        { error: `Message too long (max ${MAX_MESSAGE_LENGTH} chars)` },
+        { status: 400 }
+      );
+    }
+  }
+  if (currentEnvId && !ENV_ID_PATTERN.test(currentEnvId)) {
+    return Response.json({ error: "Invalid envId format" }, { status: 400 });
+  }
 
   let systemPrompt = SYSTEM_PROMPT;
   if (currentEnvId) {
