@@ -1,36 +1,32 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# HaaS Chat
+
+An AI chat assistant that can write, execute, and iterate on code inside isolated Docker containers using [HaaS (Harness-as-a-Service)](https://github.com/dacs30/Forge-Agent-Harness-API).
+
+Built with Next.js, OpenAI, and React.
+
+## Features
+
+- **Sandboxed code execution** — spins up ephemeral Docker containers (Python, Node, Go, Rust, Ruby, Alpine) on demand
+- **Agentic tool loop** — the AI creates environments, writes files, runs commands, reads output, and iterates automatically
+- **File downloads** — generates files (Excel, PDF, images, etc.) inside containers and offers them for download
+- **Streaming UI** — real-time tool activity and responses streamed to the browser via NDJSON
+- **Persistent environments** — containers stay alive across messages so users can continue working
 
 ## Getting Started
 
-First, run the development server:
+1. **Start the HaaS server** on `localhost:8080` (or set `HAAS_URL`)
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
+2. **Configure environment variables** — create `.env.local`:
+   ```
+   OPENAI_API_KEY=sk-...
+   HAAS_URL=http://localhost:8080   # optional, this is the default
+   OPENAI_MODEL=gpt-5.2             # optional, this is the default
+   ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+3. **Install and run:**
+   ```bash
+   npm install
+   npm run dev
+   ```
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
-
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
-
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+4. Open [http://localhost:3000](http://localhost:3000)
