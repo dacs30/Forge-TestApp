@@ -2,7 +2,7 @@
 
 An AI chat assistant that can write, execute, and iterate on code inside isolated Docker containers using [HaaS (Harness-as-a-Service)](https://github.com/dacs30/Forge-Agent-Harness-API).
 
-Built with Next.js, OpenAI, and React.
+Built with Next.js and OpenAI as the model provider.
 
 ![Demo](demo.gif)
 
