@@ -4,6 +4,8 @@ An AI chat assistant that can write, execute, and iterate on code inside isolate
 
 Built with Next.js, OpenAI, and React.
 
+![Demo](demo.gif)
+
 ## Features
 
 - **Sandboxed code execution** — spins up ephemeral Docker containers (Python, Node, Go, Rust, Ruby, Alpine) on demand
