@@ -177,7 +177,22 @@ export async function POST(req: NextRequest) {
             if (toolCall.function.name === "create_environment") {
               try {
                 const parsed = JSON.parse(result);
-                if (parsed.id) activeEnvId = parsed.id;
+                if (parsed.id) {
+                  activeEnvId = parsed.id;
+                  // Fix up any remaining batched tool calls that reference a stale env_id
+                  for (const laterCall of assistantMessage.tool_calls!) {
+                    if (laterCall.type !== "function") continue;
+                    try {
+                      const laterArgs = JSON.parse(laterCall.function.arguments);
+                      if (laterArgs.env_id && laterArgs.env_id !== activeEnvId) {
+                        laterArgs.env_id = activeEnvId;
+                        laterCall.function.arguments = JSON.stringify(laterArgs);
+                      }
+                    } catch {
+                      // ignore unparseable args
+                    }
+                  }
+                }
               } catch {
                 // ignore
               }
