@@ -22,6 +22,7 @@ Built with Next.js and OpenAI as the model provider.
    ```
    OPENAI_API_KEY=sk-...
    HAAS_URL=http://localhost:8080   # optional, this is the default
+   HAAS_API_KEY=your-haas-key       # optional, sent as Bearer token to HaaS
    OPENAI_MODEL=gpt-5.2             # optional, this is the default
    ```
 

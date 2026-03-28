@@ -1,4 +1,11 @@
 const HAAS_URL = process.env.HAAS_URL || "http://localhost:8080";
+const HAAS_API_KEY = process.env.HAAS_API_KEY;
+
+function haasHeaders(extra?: Record<string, string>): Record<string, string> {
+  const headers: Record<string, string> = { ...extra };
+  if (HAAS_API_KEY) headers["Authorization"] = `Bearer ${HAAS_API_KEY}`;
+  return headers;
+}
 
 export interface Environment {
   id: string;
@@ -25,7 +32,7 @@ export async function createEnvironment(
 ): Promise<Environment> {
   const res = await fetch(`${HAAS_URL}/v1/environments/`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: haasHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({ image, ...opts }),
   });
   if (!res.ok) {
@@ -38,6 +45,7 @@ export async function createEnvironment(
 export async function destroyEnvironment(id: string): Promise<void> {
   const res = await fetch(`${HAAS_URL}/v1/environments/${id}`, {
     method: "DELETE",
+    headers: haasHeaders(),
   });
   if (!res.ok && res.status !== 404) {
     throw new Error("Failed to destroy environment");
@@ -51,7 +59,7 @@ export async function execCommand(
 ): Promise<{ stdout: string; stderr: string; exitCode: string }> {
   const res = await fetch(`${HAAS_URL}/v1/environments/${envId}/exec`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: haasHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({ command, ...opts }),
   });
 
@@ -88,7 +96,7 @@ export async function writeFile(
 ): Promise<void> {
   const res = await fetch(
     `${HAAS_URL}/v1/environments/${envId}/files/content?path=${encodeURIComponent(path)}`,
-    { method: "PUT", body: content }
+    { method: "PUT", headers: haasHeaders(), body: content }
   );
   if (!res.ok) {
     throw new Error("Failed to write file");
@@ -100,7 +108,8 @@ export async function readFile(
   path: string
 ): Promise<string> {
   const res = await fetch(
-    `${HAAS_URL}/v1/environments/${envId}/files/content?path=${encodeURIComponent(path)}`
+    `${HAAS_URL}/v1/environments/${envId}/files/content?path=${encodeURIComponent(path)}`,
+    { headers: haasHeaders() }
   );
   if (!res.ok) {
     throw new Error("Failed to read file");
@@ -113,7 +122,8 @@ export async function listFiles(
   path: string
 ): Promise<FileInfo[]> {
   const res = await fetch(
-    `${HAAS_URL}/v1/environments/${envId}/files/?path=${encodeURIComponent(path)}`
+    `${HAAS_URL}/v1/environments/${envId}/files/?path=${encodeURIComponent(path)}`,
+    { headers: haasHeaders() }
   );
   if (!res.ok) {
     throw new Error("Failed to list files");

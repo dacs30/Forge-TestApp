@@ -37,8 +37,10 @@ export async function GET(req: NextRequest) {
   }
 
   try {
+    const haasApiKey = process.env.HAAS_API_KEY;
     const haasRes = await fetch(
-      `${HAAS_URL}/v1/environments/${envId}/files/content?path=${encodeURIComponent(filePath)}`
+      `${HAAS_URL}/v1/environments/${envId}/files/content?path=${encodeURIComponent(filePath)}`,
+      haasApiKey ? { headers: { Authorization: `Bearer ${haasApiKey}` } } : undefined
     );
 
     if (!haasRes.ok) {
