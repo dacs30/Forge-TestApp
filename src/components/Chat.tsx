@@ -39,6 +39,7 @@ Try asking me things like:
   const [loading, setLoading] = useState(false);
   const [envId, setEnvId] = useState<string | null>(null);
   const [currentToolEvents, setCurrentToolEvents] = useState<ToolEvent[]>([]);
+  const [mode, setMode] = useState<"http" | "mcp">("http");
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -69,6 +70,7 @@ Try asking me things like:
           body: JSON.stringify({
             messages: updatedMessages,
             envId,
+            mode,
           }),
         });
 
@@ -207,12 +209,41 @@ Try asking me things like:
       {/* Input + env indicator */}
       <div className="border-t border-zinc-800 bg-zinc-950/50 backdrop-blur-sm px-4 py-4">
         <div className="max-w-3xl mx-auto">
-          {envId && (
-            <div className="flex items-center gap-2 mb-2 text-xs text-zinc-500">
-              <span className="w-2 h-2 bg-green-500 rounded-full" />
-              Environment active: {envId}
+          <div className="flex items-center justify-between mb-2">
+            {envId ? (
+              <div className="flex items-center gap-2 text-xs text-zinc-500">
+                <span className="w-2 h-2 bg-green-500 rounded-full" />
+                Environment active: {envId}
+              </div>
+            ) : (
+              <div />
+            )}
+            {/* Transport mode toggle */}
+            <div className="flex items-center gap-1 rounded-lg bg-zinc-800 p-0.5 text-xs font-medium">
+              <button
+                onClick={() => setMode("http")}
+                disabled={loading}
+                className={`px-3 py-1 rounded-md transition-colors ${
+                  mode === "http"
+                    ? "bg-zinc-600 text-zinc-100"
+                    : "text-zinc-400 hover:text-zinc-200"
+                }`}
+              >
+                HTTP
+              </button>
+              <button
+                onClick={() => setMode("mcp")}
+                disabled={loading}
+                className={`px-3 py-1 rounded-md transition-colors ${
+                  mode === "mcp"
+                    ? "bg-zinc-600 text-zinc-100"
+                    : "text-zinc-400 hover:text-zinc-200"
+                }`}
+              >
+                MCP
+              </button>
             </div>
-          )}
+          </div>
           <ChatInput onSend={handleSend} disabled={loading} />
         </div>
       </div>

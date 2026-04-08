@@ -13,23 +13,36 @@ Built with Next.js and OpenAI as the model provider.
 - **File downloads** — generates files (Excel, PDF, images, etc.) inside containers and offers them for download
 - **Streaming UI** — real-time tool activity and responses streamed to the browser via NDJSON
 - **Persistent environments** — containers stay alive across messages so users can continue working
+- **HTTP or MCP transport** — switch between direct HaaS HTTP calls and an MCP server with a single toggle
+
+## Transport modes
+
+| Mode | How it works |
+|------|-------------|
+| **HTTP** (default) | The Next.js server calls the HaaS REST API directly. Tools are defined locally. |
+| **MCP** | The Next.js server connects to an MCP server over SSE (`localhost:8091`). Tool schemas and execution are fully owned by the MCP server — no local tool definitions are used. |
+
+Use the **HTTP / MCP** toggle in the bottom-right corner of the chat to switch modes. The toggle is per-session and takes effect on the next message.
 
 ## Getting Started
 
 1. **Start the HaaS server** on `localhost:8080` (or set `HAAS_URL`)
 
-2. **Configure environment variables** — create `.env.local`:
+2. *(MCP mode only)* **Start the MCP server** on `localhost:8091` (or set `MCP_URL`)
+
+3. **Configure environment variables** — create `.env.local`:
    ```
    OPENAI_API_KEY=sk-...
-   HAAS_URL=http://localhost:8080   # optional, this is the default
+   HAAS_URL=http://localhost:8080   # optional, default for HTTP mode
    HAAS_API_KEY=your-haas-key       # optional, sent as Bearer token to HaaS
-   OPENAI_MODEL=gpt-5.2             # optional, this is the default
+   OPENAI_MODEL=gpt-4o              # optional, defaults to gpt-4o
+   MCP_URL=http://localhost:8091    # optional, default for MCP mode
    ```
 
-3. **Install and run:**
+4. **Install and run:**
    ```bash
    npm install
    npm run dev
    ```
 
-4. Open [http://localhost:3000](http://localhost:3000)
+5. Open [http://localhost:3000](http://localhost:3000)

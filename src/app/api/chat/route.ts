@@ -3,6 +3,7 @@ import OpenAI from "openai";
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
 import { haasTools } from "@/lib/tools";
 import { executeTool } from "@/lib/tool-executor";
+import { McpClient, type McpToolAsOpenAI } from "@/lib/mcp-client";
 
 const SYSTEM_PROMPT = `You are a helpful coding assistant with access to isolated Docker containers via HaaS (Harness-as-a-Service).
 
@@ -72,11 +73,14 @@ const ENV_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
 export async function POST(req: NextRequest) {
   const openai = new OpenAI();
 
-  const { messages: clientMessages, envId: currentEnvId } =
+  const { messages: clientMessages, envId: currentEnvId, mode } =
     (await req.json()) as {
       messages: { role: "user" | "assistant"; content: string }[];
       envId?: string;
+      mode?: "http" | "mcp";
     };
+
+  const useMcp = mode === "mcp";
 
   // Input validation
   if (!Array.isArray(clientMessages) || clientMessages.length === 0) {
@@ -129,12 +133,32 @@ export async function POST(req: NextRequest) {
         controller.enqueue(encoder.encode(JSON.stringify(event) + "\n"));
       }
 
+      let mcpClient: McpClient | null = null;
+      let activeTools: typeof haasTools | McpToolAsOpenAI[] = haasTools;
+
+      if (useMcp) {
+        try {
+          mcpClient = new McpClient();
+          await mcpClient.connect();
+          activeTools = await mcpClient.listTools();
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : "Unknown error";
+          send({
+            type: "message",
+            content: `**Error connecting to MCP server:** ${msg}\n\nMake sure the MCP server is running on \`localhost:8091\`.`,
+            envId: activeEnvId,
+          });
+          controller.close();
+          return;
+        }
+      }
+
       try {
         for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
           const completion = await openai.chat.completions.create({
             model: process.env.OPENAI_MODEL || "gpt-4o",
             messages,
-            tools: haasTools,
+            tools: activeTools,
             tool_choice: "auto",
           });
 
@@ -171,7 +195,9 @@ export async function POST(req: NextRequest) {
               args,
             });
 
-            const result = await executeTool(toolCall.function.name, args);
+            const result = mcpClient
+              ? await mcpClient.callTool(toolCall.function.name, args)
+              : await executeTool(toolCall.function.name, args);
 
             // Track active environment
             if (toolCall.function.name === "create_environment") {
@@ -279,8 +305,9 @@ export async function POST(req: NextRequest) {
 
         let hint = "";
         if (errorMessage.includes("ECONNREFUSED")) {
-          hint =
-            "\n\nMake sure the HaaS server is running on `localhost:8080`.";
+          hint = useMcp
+            ? "\n\nMake sure the MCP server is running on `localhost:8091`."
+            : "\n\nMake sure the HaaS server is running on `localhost:8080`.";
         }
         if (
           errorMessage.includes("API key") ||
@@ -295,6 +322,8 @@ export async function POST(req: NextRequest) {
           envId: activeEnvId,
         });
         controller.close();
+      } finally {
+        mcpClient?.close();
       }
     },
   });
