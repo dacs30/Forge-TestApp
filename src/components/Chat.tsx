@@ -1,10 +1,13 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback } from "react";
+import dynamic from "next/dynamic";
 import ChatMessage from "./ChatMessage";
 import ChatInput from "./ChatInput";
 import ToolActivity, { type ToolEvent } from "./ToolActivity";
 import FileDownload, { type FileDownloadData } from "./FileDownload";
+
+const Terminal = dynamic(() => import("./Terminal"), { ssr: false });
 
 interface Message {
   role: "user" | "assistant";
@@ -40,6 +43,7 @@ Try asking me things like:
   const [envId, setEnvId] = useState<string | null>(null);
   const [currentToolEvents, setCurrentToolEvents] = useState<ToolEvent[]>([]);
   const [mode, setMode] = useState<"http" | "mcp">("http");
+  const [terminalOpen, setTerminalOpen] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -155,7 +159,7 @@ Try asking me things like:
         setLoading(false);
       }
     },
-    [entries, envId]
+    [entries, envId, mode]
   );
 
   return (
@@ -206,14 +210,35 @@ Try asking me things like:
         </div>
       </div>
 
+      {/* Terminal panel */}
+      {envId && terminalOpen && (
+        <Terminal
+          envId={envId}
+          onClose={() => setTerminalOpen(false)}
+        />
+      )}
+
       {/* Input + env indicator */}
       <div className="border-t border-zinc-800 bg-zinc-950/50 backdrop-blur-sm px-4 py-4">
         <div className="max-w-3xl mx-auto">
           <div className="flex items-center justify-between mb-2">
             {envId ? (
-              <div className="flex items-center gap-2 text-xs text-zinc-500">
-                <span className="w-2 h-2 bg-green-500 rounded-full" />
-                Environment active: {envId}
+              <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 text-xs text-zinc-500">
+                  <span className="w-2 h-2 bg-green-500 rounded-full" />
+                  Environment active: {envId}
+                </div>
+                <button
+                  onClick={() => setTerminalOpen((o) => !o)}
+                  className={`flex items-center gap-1 text-xs px-2 py-0.5 rounded border transition-colors ${
+                    terminalOpen
+                      ? "border-zinc-500 text-zinc-200 bg-zinc-700"
+                      : "border-zinc-700 text-zinc-400 hover:text-zinc-200 hover:border-zinc-500"
+                  }`}
+                >
+                  <span>⌨</span>
+                  {terminalOpen ? "Hide Terminal" : "Open Terminal"}
+                </button>
               </div>
             ) : (
               <div />

@@ -1,4 +1,5 @@
 const MCP_URL = process.env.MCP_URL || "http://localhost:8091";
+const MCP_API_KEY = process.env.HAAS_API_KEY;
 
 export interface McpToolAsOpenAI {
   type: "function";
@@ -37,9 +38,13 @@ export class McpClient {
   }
 
   async connect(): Promise<void> {
-    const res = await fetch(`${this.baseUrl}/sse`, {
-      headers: { Accept: "text/event-stream", "Cache-Control": "no-cache" },
-    });
+    const sseHeaders: Record<string, string> = {
+      Accept: "text/event-stream",
+      "Cache-Control": "no-cache",
+    };
+    if (MCP_API_KEY) sseHeaders["Authorization"] = `Bearer ${MCP_API_KEY}`;
+
+    const res = await fetch(`${this.baseUrl}/sse`, { headers: sseHeaders });
     if (!res.ok || !res.body) {
       throw new Error(`Failed to connect to MCP server: HTTP ${res.status}`);
     }
@@ -202,9 +207,14 @@ export class McpClient {
     const url = endpoint.startsWith("http")
       ? endpoint
       : `${this.baseUrl}${endpoint}`;
+    const postHeaders: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+    if (MCP_API_KEY) postHeaders["Authorization"] = `Bearer ${MCP_API_KEY}`;
+
     const res = await fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: postHeaders,
       body: JSON.stringify(body),
     });
     if (!res.ok) {
