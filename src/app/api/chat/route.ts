@@ -200,30 +200,37 @@ export async function POST(req: NextRequest) {
               : await executeTool(toolCall.function.name, args);
 
             // Track active environment
-            if (toolCall.function.name === "create_environment") {
+            if (toolCall.function.name.endsWith("create_environment")) {
+              // Extract env ID from JSON (HTTP mode) or plain text (MCP mode)
+              let extractedId: string | null = null;
               try {
                 const parsed = JSON.parse(result);
-                if (parsed.id) {
-                  activeEnvId = parsed.id;
-                  // Fix up any remaining batched tool calls that reference a stale env_id
-                  for (const laterCall of assistantMessage.tool_calls!) {
-                    if (laterCall.type !== "function") continue;
-                    try {
-                      const laterArgs = JSON.parse(laterCall.function.arguments);
-                      if (laterArgs.env_id && laterArgs.env_id !== activeEnvId) {
-                        laterArgs.env_id = activeEnvId;
-                        laterCall.function.arguments = JSON.stringify(laterArgs);
-                      }
-                    } catch {
-                      // ignore unparseable args
+                extractedId = parsed.id ?? parsed.env_id ?? parsed.environment_id ?? null;
+              } catch {
+                // MCP servers often return plain text like "ID: env_abc123"
+                const idMatch = result.match(/\bID:\s*(\S+)/i)
+                  ?? result.match(/\b(env_[a-zA-Z0-9_-]+)/);
+                if (idMatch) extractedId = idMatch[1];
+              }
+
+              if (extractedId) {
+                activeEnvId = String(extractedId);
+                // Fix up any remaining batched tool calls that reference a stale env_id
+                for (const laterCall of assistantMessage.tool_calls!) {
+                  if (laterCall.type !== "function") continue;
+                  try {
+                    const laterArgs = JSON.parse(laterCall.function.arguments);
+                    if (laterArgs.env_id && laterArgs.env_id !== activeEnvId) {
+                      laterArgs.env_id = activeEnvId;
+                      laterCall.function.arguments = JSON.stringify(laterArgs);
                     }
+                  } catch {
+                    // ignore unparseable args
                   }
                 }
-              } catch {
-                // ignore
               }
             }
-            if (toolCall.function.name === "destroy_environment") {
+            if (toolCall.function.name.endsWith("destroy_environment")) {
               if (args.env_id === activeEnvId) {
                 activeEnvId = null;
               }
