@@ -1,6 +1,22 @@
 const MCP_URL = process.env.MCP_URL || "http://localhost:8091";
 const MCP_API_KEY = process.env.HAAS_API_KEY;
 
+const CONNECT_TIMEOUT_MS = 10_000;
+const REQUEST_TIMEOUT_MS = 30_000;
+
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`${label} timed out after ${ms / 1000}s`)),
+      ms,
+    );
+    promise.then(
+      (v) => { clearTimeout(timer); resolve(v); },
+      (e) => { clearTimeout(timer); reject(e); },
+    );
+  });
+}
+
 export interface McpToolAsOpenAI {
   type: "function";
   function: {
@@ -10,70 +26,41 @@ export interface McpToolAsOpenAI {
   };
 }
 
-interface PendingRequest {
-  resolve: (v: unknown) => void;
-  reject: (e: Error) => void;
-}
-
 /**
- * Minimal MCP client over SSE transport.
+ * Minimal MCP client using Streamable HTTP transport (spec 2025-03-26).
  *
  * Protocol flow:
- *   1. GET /sse  →  server sends "endpoint" event with the message URL
- *   2. POST <endpoint>  initialize request
- *   3. POST <endpoint>  notifications/initialized (no response expected)
- *   4. POST <endpoint>  tools/call requests — responses arrive over SSE
+ *   1. POST <endpoint>  initialize request  →  JSON or SSE response
+ *   2. POST <endpoint>  notifications/initialized  →  202 Accepted
+ *   3. POST <endpoint>  tools/list, tools/call, etc.  →  JSON or SSE response
+ *
+ * Each JSON-RPC request is a separate POST. The server may respond with
+ * Content-Type: application/json (single response) or text/event-stream
+ * (SSE stream that includes the response plus optional notifications).
+ * Session identity is tracked via the Mcp-Session-Id header.
  */
 export class McpClient {
-  private baseUrl: string;
-  private messageEndpoint: string | null = null;
-  private pending = new Map<number, PendingRequest>();
+  private endpoint: string;
+  private sessionId: string | null = null;
   private nextId = 1;
-  private reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
-  private endpointResolve: (() => void) | null = null;
-  private endpointReject: ((e: Error) => void) | null = null;
 
-  constructor(baseUrl = MCP_URL) {
-    this.baseUrl = baseUrl;
+  constructor(endpoint = MCP_URL) {
+    this.endpoint = endpoint;
   }
 
   async connect(): Promise<void> {
-    const sseHeaders: Record<string, string> = {
-      Accept: "text/event-stream",
-      "Cache-Control": "no-cache",
-    };
-    if (MCP_API_KEY) sseHeaders["Authorization"] = `Bearer ${MCP_API_KEY}`;
+    await withTimeout(
+      this._request("initialize", {
+        protocolVersion: "2025-03-26",
+        capabilities: {},
+        clientInfo: { name: "haas-chat", version: "1.0.0" },
+      }),
+      CONNECT_TIMEOUT_MS,
+      "MCP initialize",
+    );
 
-    const res = await fetch(`${this.baseUrl}/sse`, { headers: sseHeaders });
-    if (!res.ok || !res.body) {
-      throw new Error(`Failed to connect to MCP server: HTTP ${res.status}`);
-    }
-
-    this.reader = res.body.getReader();
-
-    const endpointReady = new Promise<void>((resolve, reject) => {
-      this.endpointResolve = resolve;
-      this.endpointReject = reject;
-    });
-
-    // Consume SSE stream in background — errors propagate to pending requests
-    this._consumeSse().catch((err: unknown) => {
-      const error = err instanceof Error ? err : new Error(String(err));
-      this.endpointReject?.(error);
-      for (const p of this.pending.values()) p.reject(error);
-      this.pending.clear();
-    });
-
-    await endpointReady;
-
-    // MCP handshake
-    await this._request("initialize", {
-      protocolVersion: "2024-11-05",
-      capabilities: {},
-      clientInfo: { name: "haas-chat", version: "1.0.0" },
-    });
-    // Notify server (fire-and-forget, no response)
-    await this._post({ jsonrpc: "2.0", method: "notifications/initialized" });
+    // Fire-and-forget notification (server returns 202)
+    await this._notify("notifications/initialized");
   }
 
   /**
@@ -81,7 +68,11 @@ export class McpClient {
    * ChatCompletionTool format so they can be passed directly to the model.
    */
   async listTools(): Promise<McpToolAsOpenAI[]> {
-    const result = (await this._request("tools/list", {})) as {
+    const result = (await withTimeout(
+      this._request("tools/list", {}),
+      REQUEST_TIMEOUT_MS,
+      "MCP tools/list",
+    )) as {
       tools?: Array<{
         name: string;
         description?: string;
@@ -104,15 +95,15 @@ export class McpClient {
     name: string,
     args: Record<string, unknown>
   ): Promise<string> {
-    const result = (await this._request("tools/call", {
-      name,
-      arguments: args,
-    })) as {
+    const result = (await withTimeout(
+      this._request("tools/call", { name, arguments: args }),
+      REQUEST_TIMEOUT_MS,
+      `MCP tool call "${name}"`,
+    )) as {
       content?: Array<{ type: string; text?: string }>;
       isError?: boolean;
     };
 
-    // MCP returns an array of content blocks; extract the first text block
     const text =
       result?.content?.find((c) => c.type === "text")?.text ??
       JSON.stringify(result);
@@ -120,117 +111,145 @@ export class McpClient {
     return text;
   }
 
+  /** Terminate the session. Best-effort DELETE; errors are ignored. */
   close(): void {
-    try {
-      this.reader?.cancel();
-    } catch {
-      // ignore
-    }
+    if (!this.sessionId) return;
+    const headers: Record<string, string> = {
+      "Mcp-Session-Id": this.sessionId,
+    };
+    if (MCP_API_KEY) headers["Authorization"] = `Bearer ${MCP_API_KEY}`;
+    fetch(this.endpoint, { method: "DELETE", headers }).catch(() => {});
   }
 
   // ── Internal ──────────────────────────────────────────────────────────────
 
-  private async _consumeSse(): Promise<void> {
-    const decoder = new TextDecoder();
-    let buffer = "";
-    let currentEvent = "";
-    let currentDataLines: string[] = [];
-
-    const dispatch = () => {
-      const event = currentEvent;
-      const data = currentDataLines.join("\n");
-      currentEvent = "";
-      currentDataLines = [];
-
-      if (!data) return;
-
-      if (event === "endpoint") {
-        this.messageEndpoint = data.trim();
-        this.endpointResolve?.();
-        this.endpointResolve = null;
-        this.endpointReject = null;
-        return;
-      }
-
-      if (event === "message" || event === "") {
-        try {
-          const msg = JSON.parse(data) as {
-            id?: number;
-            result?: unknown;
-            error?: { message?: string };
-          };
-          if (msg.id !== undefined) {
-            const p = this.pending.get(msg.id);
-            if (p) {
-              this.pending.delete(msg.id);
-              if (msg.error) {
-                p.reject(
-                  new Error(msg.error.message ?? JSON.stringify(msg.error))
-                );
-              } else {
-                p.resolve(msg.result);
-              }
-            }
-          }
-        } catch {
-          // ignore malformed lines
-        }
-      }
+  private _headers(): Record<string, string> {
+    const h: Record<string, string> = {
+      "Content-Type": "application/json",
+      Accept: "application/json, text/event-stream",
     };
-
-    while (true) {
-      const { done, value } = await this.reader!.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() ?? "";
-
-      for (const line of lines) {
-        const stripped = line.replace(/\r$/, ""); // handle CRLF
-        if (stripped === "") {
-          dispatch();
-        } else if (stripped.startsWith("event:")) {
-          currentEvent = stripped.slice(6).trim();
-        } else if (stripped.startsWith("data:")) {
-          // Strip exactly one leading space per SSE spec
-          const payload = stripped.slice(5);
-          currentDataLines.push(payload.startsWith(" ") ? payload.slice(1) : payload);
-        }
-        // Ignore "id:" and "retry:" lines
-      }
-    }
+    if (this.sessionId) h["Mcp-Session-Id"] = this.sessionId;
+    if (MCP_API_KEY) h["Authorization"] = `Bearer ${MCP_API_KEY}`;
+    return h;
   }
 
-  private async _post(body: Record<string, unknown>): Promise<void> {
-    const endpoint = this.messageEndpoint!;
-    const url = endpoint.startsWith("http")
-      ? endpoint
-      : `${this.baseUrl}${endpoint}`;
-    const postHeaders: Record<string, string> = {
-      "Content-Type": "application/json",
-    };
-    if (MCP_API_KEY) postHeaders["Authorization"] = `Bearer ${MCP_API_KEY}`;
+  /** Send a JSON-RPC notification (no id, expects 202). */
+  private async _notify(method: string, params?: unknown): Promise<void> {
+    const body: Record<string, unknown> = { jsonrpc: "2.0", method };
+    if (params !== undefined) body.params = params;
 
-    const res = await fetch(url, {
+    const res = await fetch(this.endpoint, {
       method: "POST",
-      headers: postHeaders,
+      headers: this._headers(),
       body: JSON.stringify(body),
     });
+    this._captureSession(res);
     if (!res.ok) {
-      throw new Error(`MCP message post failed: HTTP ${res.status}`);
+      throw new Error(`MCP notification "${method}" failed: HTTP ${res.status}`);
     }
   }
 
-  private _request(method: string, params: unknown): Promise<unknown> {
+  /** Send a JSON-RPC request and return the result. */
+  private async _request(method: string, params: unknown): Promise<unknown> {
     const id = this.nextId++;
-    return new Promise<unknown>((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
-      this._post({ jsonrpc: "2.0", id, method, params }).catch((err: unknown) => {
-        if (this.pending.delete(id)) {
-          reject(err instanceof Error ? err : new Error(String(err)));
-        }
-      });
+    const body = { jsonrpc: "2.0", id, method, params };
+
+    const res = await fetch(this.endpoint, {
+      method: "POST",
+      headers: this._headers(),
+      body: JSON.stringify(body),
     });
+    this._captureSession(res);
+
+    if (!res.ok) {
+      throw new Error(`MCP request "${method}" failed: HTTP ${res.status}`);
+    }
+
+    const contentType = res.headers.get("content-type") ?? "";
+
+    if (contentType.includes("text/event-stream")) {
+      return this._readSseResponse(res, id);
+    }
+
+    // Plain JSON response
+    const msg = (await res.json()) as {
+      result?: unknown;
+      error?: { message?: string };
+    };
+    if (msg.error) {
+      throw new Error(msg.error.message ?? JSON.stringify(msg.error));
+    }
+    return msg.result;
+  }
+
+  /**
+   * Read an SSE stream returned from a POST and extract the JSON-RPC
+   * response matching `requestId`. The server may also send notifications
+   * before the response — those are ignored for now.
+   */
+  private async _readSseResponse(
+    res: Response,
+    requestId: number
+  ): Promise<unknown> {
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let dataLines: string[] = [];
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+
+        for (const raw of lines) {
+          const line = raw.replace(/\r$/, "");
+
+          if (line === "") {
+            // End of SSE event — dispatch
+            const data = dataLines.join("\n");
+            dataLines = [];
+            if (!data) continue;
+
+            try {
+              const msg = JSON.parse(data) as {
+                id?: number;
+                result?: unknown;
+                error?: { message?: string };
+              };
+              if (msg.id === requestId) {
+                if (msg.error) {
+                  throw new Error(
+                    msg.error.message ?? JSON.stringify(msg.error)
+                  );
+                }
+                return msg.result;
+              }
+            } catch (e) {
+              // Re-throw MCP errors; ignore malformed JSON
+              if (!(e instanceof SyntaxError)) throw e;
+            }
+          } else if (line.startsWith("data:")) {
+            const payload = line.slice(5);
+            dataLines.push(
+              payload.startsWith(" ") ? payload.slice(1) : payload
+            );
+          }
+          // Ignore event:, id:, retry: lines
+        }
+      }
+    } finally {
+      reader.cancel().catch(() => {});
+    }
+
+    throw new Error("MCP SSE stream ended without a response");
+  }
+
+  private _captureSession(res: Response): void {
+    const id = res.headers.get("mcp-session-id");
+    if (id) this.sessionId = id;
   }
 }

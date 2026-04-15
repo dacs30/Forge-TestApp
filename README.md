@@ -21,7 +21,7 @@ Built with Next.js and OpenAI as the model provider.
 | Mode | How it works |
 |------|-------------|
 | **HTTP** (default) | The Next.js server calls the HaaS REST API directly. Tools are defined locally. |
-| **MCP** | The Next.js server connects to an MCP server over SSE (`localhost:8091`). Tool schemas and execution are fully owned by the MCP server — no local tool definitions are used. |
+| **MCP** | The Next.js server connects to an MCP server via Streamable HTTP (`localhost:8091`). Tool schemas and execution are fully owned by the MCP server — no local tool definitions are used. |
 
 Use the **HTTP / MCP** toggle in the bottom-right corner of the chat to switch modes. The toggle is per-session and takes effect on the next message.
 
