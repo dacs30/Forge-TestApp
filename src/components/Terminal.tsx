@@ -77,7 +77,7 @@ export default function Terminal({ envId, onClose }: TerminalProps) {
 
       // Connect to the local WS proxy
       const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-      const wsUrl = `${proto}//${window.location.host}/api/ws/terminal/${encodeURIComponent(envId)}?cmd=sh`;
+      const wsUrl = `${proto}//${window.location.host}/api/ws/terminal/${encodeURIComponent(envId)}?cmd=bash`;
       ws = new WebSocket(wsUrl);
       wsRef.current = ws;
 
